@@ -37,6 +37,23 @@ if not EXCHANGE_API_KEY:
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
+# Common HTTP headers (mimic a browser)
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "max-age=0",
+    "Sec-Ch-Ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1"
+}
+
 # ----------------------------------------------------------------------
 # Database layer
 # ----------------------------------------------------------------------
@@ -108,39 +125,51 @@ def save_full_year_to_json(year, rates_by_date):
     write_year_json(year, rates_by_date)
 
 # ----------------------------------------------------------------------
-# Data fetchers
+# Data fetchers (with headers)
 # ----------------------------------------------------------------------
 def fetch_frankfurter_year(year):
-    """Fetch a full year (or up to yesterday) from Frankfurter."""
-    start = f"{year}-01-01"
+    """Fetch a full year (or up to yesterday) from Frankfurter with browser headers."""
     today = datetime.now().date()
+    start = f"{year}-01-01"
     end = f"{year}-12-31" if year < today.year else (today - timedelta(days=1)).strftime("%Y-%m-%d")
     url = f"https://api.frankfurter.dev/v1/{start}..{end}"
     logger.info(f"Fetching Frankfurter: {url}")
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get('rates', {})  # dict of date_str -> {currency: rate}
+    try:
+        resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        rates = data.get('rates', {})
+        if not rates:
+            logger.warning(f"No rates returned for year {year}")
+        return rates
+    except Exception as e:
+        logger.error(f"Failed to fetch year {year}: {e}")
+        return {}
 
 def fetch_exchangerate_api():
-    """Fetch today's rates from ExchangeRate-API."""
+    """Fetch today's rates from ExchangeRate-API with browser headers."""
     url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_API_KEY}/latest/EUR"
     logger.info(f"Fetching ExchangeRate-API: {url}")
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get('result') != 'success':
-        raise RuntimeError(f"API error: {data}")
-    rates = data.get('conversion_rates', {})
-    if 'EUR' in rates:
-        del rates['EUR']          # remove the base itself
-    update_utc = data.get('time_last_update_utc')
-    if update_utc:
-        dt = datetime.strptime(update_utc, "%a, %d %b %Y %H:%M:%S %z")
-        date_obj = dt.date()
-    else:
-        date_obj = datetime.now().date()
-    return date_obj, rates
+    try:
+        resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('result') != 'success':
+            raise RuntimeError(f"API error: {data}")
+        rates = data.get('conversion_rates', {})
+        if 'EUR' in rates:
+            del rates['EUR']          # remove the base itself
+        # Parse the date from the response
+        update_utc = data.get('time_last_update_utc')
+        if update_utc:
+            dt = datetime.strptime(update_utc, "%a, %d %b %Y %H:%M:%S %z")
+            date_obj = dt.date()
+        else:
+            date_obj = datetime.now().date()
+        return date_obj, rates
+    except Exception as e:
+        logger.error(f"Failed to fetch from ExchangeRate-API: {e}")
+        raise
 
 # ----------------------------------------------------------------------
 # Core actions
@@ -161,6 +190,8 @@ def backfill():
                 if date_obj > today:
                     continue
                 insert_rates(date_obj, rates, source="Frankfurter")
+        else:
+            logger.warning(f"Skipping year {year} – no data received.")
     logger.info("Backfill complete.")
 
 def daily_update():
