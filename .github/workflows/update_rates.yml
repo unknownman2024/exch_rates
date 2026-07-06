@@ -14,7 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          # Ensure we have the full history to commit
           fetch-depth: 0
 
       - name: Set up Python
