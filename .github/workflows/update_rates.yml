@@ -27,7 +27,7 @@ jobs:
       - name: Run daily update
         env:
           EXCHANGE_RATE_API_KEY: ${{ secrets.EXCHANGE_RATE_API_KEY }}
-        run: python main.py update
+        run: python main.py backfill
 
       - name: Commit and push updated data
         run: |
