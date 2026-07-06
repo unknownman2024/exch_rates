@@ -2,21 +2,38 @@ name: Daily Exchange Rate Update
 
 on:
   schedule:
-    - cron: '30 0 * * *'
-  workflow_dispatch:
+    - cron: '30 0 * * *'      # 00:30 UTC daily
+  workflow_dispatch:          # manual trigger
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write          # needed to push changes
+
     steps:
       - uses: actions/checkout@v3
+        with:
+          # Ensure we have the full history to commit
+          fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run daily update
         env:
           EXCHANGE_RATE_API_KEY: ${{ secrets.EXCHANGE_RATE_API_KEY }}
         run: python main.py update
+
+      - name: Commit and push updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "Daily exchange rates update"
+          git push
