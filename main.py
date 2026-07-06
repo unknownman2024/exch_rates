@@ -2,17 +2,21 @@
 """
 Exchange Rate Database – Backfill & Daily Update
 Usage:
-    python main.py backfill   # loads all historical data (1999–yesterday) from Frankfurter
-    python main.py update     # fetches today's rates from ExchangeRate-API and appends
+    python main.py backfill   # loads all historical data (1999–yesterday) from Frankfurter,
+                              # saves to SQLite and writes yearly JSON files in data/
+    python main.py update     # fetches today's rates from ExchangeRate-API, appends to SQLite
+                              # and updates the current year's JSON file
     python main.py full       # backfill first, then update (useful for initial setup)
 """
 
 import os
 import sys
+import json
 import argparse
 import logging
 import requests
 from datetime import datetime, timedelta
+from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -24,16 +28,18 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Database: SQLite by default (exchange_rates.db), or use DATABASE_URL if provided
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///exchange_rates.db")
 EXCHANGE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
 if not EXCHANGE_API_KEY:
     raise ValueError("EXCHANGE_RATE_API_KEY environment variable not set")
 
+# Ensure data directory exists
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
 # ----------------------------------------------------------------------
 # Database layer
 # ----------------------------------------------------------------------
-# SQLite needs special connect_args for foreign keys, etc. – we keep it simple.
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(bind=engine)
 
@@ -55,7 +61,7 @@ def init_db():
     logger.info("Database table ready.")
 
 def insert_rates(date_obj, rates_dict, source):
-    """Insert rates for a single date, skipping duplicates."""
+    """Insert rates for a single date into SQLite, skipping duplicates."""
     if not rates_dict:
         return
     with SessionLocal() as session:
@@ -70,6 +76,36 @@ def insert_rates(date_obj, rates_dict, source):
             )
         session.commit()
     logger.info(f"Inserted {len(rates_dict)} rates for {date_obj} from {source}")
+
+# ----------------------------------------------------------------------
+# JSON helpers (yearly archives)
+# ----------------------------------------------------------------------
+def read_year_json(year):
+    """Read the existing JSON for a given year, or return empty dict."""
+    filepath = DATA_DIR / f"{year}.json"
+    if filepath.exists():
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    return {}
+
+def write_year_json(year, data):
+    """Write the full year data to data/YYYY.json."""
+    filepath = DATA_DIR / f"{year}.json"
+    with open(filepath, 'w') as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    logger.info(f"Saved {len(data)} dates to {filepath}")
+
+def append_date_to_json(date_obj, rates):
+    """Append or update a single date's rates in the current year's JSON."""
+    year = date_obj.year
+    date_str = date_obj.isoformat()
+    year_data = read_year_json(year)
+    year_data[date_str] = rates
+    write_year_json(year, year_data)
+
+def save_full_year_to_json(year, rates_by_date):
+    """Write a complete year's data (dict date_str -> rates) to JSON."""
+    write_year_json(year, rates_by_date)
 
 # ----------------------------------------------------------------------
 # Data fetchers
@@ -98,7 +134,6 @@ def fetch_exchangerate_api():
     rates = data.get('conversion_rates', {})
     if 'EUR' in rates:
         del rates['EUR']          # remove the base itself
-    # Parse the date from the response
     update_utc = data.get('time_last_update_utc')
     if update_utc:
         dt = datetime.strptime(update_utc, "%a, %d %b %Y %H:%M:%S %z")
@@ -117,18 +152,25 @@ def backfill():
     for year in range(1999, today.year + 1):
         logger.info(f"Backfilling year {year}")
         rates_by_date = fetch_frankfurter_year(year)
-        for date_str, rates in rates_by_date.items():
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-            if date_obj > today:      # safety guard
-                continue
-            insert_rates(date_obj, rates, source="Frankfurter")
+        if rates_by_date:
+            # Write the entire year to JSON
+            save_full_year_to_json(year, rates_by_date)
+            # Insert each date into SQLite
+            for date_str, rates in rates_by_date.items():
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if date_obj > today:
+                    continue
+                insert_rates(date_obj, rates, source="Frankfurter")
     logger.info("Backfill complete.")
 
 def daily_update():
-    """Fetch today's rates from ExchangeRate-API and insert."""
+    """Fetch today's rates from ExchangeRate-API, insert into DB and append to JSON."""
     init_db()
     date_obj, rates = fetch_exchangerate_api()
+    # Insert into SQLite
     insert_rates(date_obj, rates, source="ExchangeRate-API")
+    # Append to yearly JSON
+    append_date_to_json(date_obj, rates)
     logger.info(f"Daily update finished for {date_obj}.")
 
 # ----------------------------------------------------------------------
