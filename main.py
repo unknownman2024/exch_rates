@@ -24,17 +24,17 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Database: SQLite by default (exchange_rates.db), or use DATABASE_URL if provided
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///exchange_rates.db")
 EXCHANGE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable not set")
 if not EXCHANGE_API_KEY:
     raise ValueError("EXCHANGE_RATE_API_KEY environment variable not set")
 
 # ----------------------------------------------------------------------
 # Database layer
 # ----------------------------------------------------------------------
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# SQLite needs special connect_args for foreign keys, etc. – we keep it simple.
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(bind=engine)
 
 def init_db():
